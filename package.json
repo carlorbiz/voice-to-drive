@@ -1,0 +1,27 @@
+{
+  "name": "voice-to-drive",
+  "version": "1.0.0",
+  "description": "Hands-free voice recording PWA with Google Drive sync",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve -l 3000",
+    "dev": "npx serve -l 3000",
+    "icons": "for size in 72 96 128 144 152 192 384 512; do convert -background none icons/icon.svg -resize ${size}x${size} icons/icon-${size}.png; done"
+  },
+  "keywords": [
+    "pwa",
+    "voice-recorder",
+    "google-drive",
+    "offline-first",
+    "hands-free"
+  ],
+  "author": "Carla",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/voice-to-drive"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

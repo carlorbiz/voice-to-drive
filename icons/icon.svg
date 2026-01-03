@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#12121a"/>
+      <stop offset="100%" style="stop-color:#0a0a0f"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff5070"/>
+      <stop offset="100%" style="stop-color:#ff3b5c"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  
+  <!-- Outer ring -->
+  <circle cx="256" cy="256" r="160" fill="none" stroke="#22222e" stroke-width="24"/>
+  
+  <!-- Recording ring -->
+  <circle cx="256" cy="256" r="160" fill="none" stroke="url(#accent)" stroke-width="24" stroke-dasharray="200 804" stroke-linecap="round" transform="rotate(-90 256 256)"/>
+  
+  <!-- Inner circle (record button) -->
+  <circle cx="256" cy="256" r="80" fill="url(#accent)"/>
+  
+  <!-- Microphone icon -->
+  <g fill="#ffffff">
+    <rect x="236" y="200" width="40" height="72" rx="20"/>
+    <path d="M216 272v16c0 22 18 40 40 40s40-18 40-40v-16" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round"/>
+    <line x1="256" y1="328" x2="256" y2="352" stroke="#ffffff" stroke-width="12" stroke-linecap="round"/>
+  </g>
+</svg>
