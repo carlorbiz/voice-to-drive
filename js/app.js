@@ -5,22 +5,8 @@
 
 const App = (function() {
     const Supabase = SupabaseService;
-    // Configuration
-    const CONFIG = {
-        // Replace with your Google Cloud credentials
-        SUPABASE_URL: 'YOUR_SUPABASE_URL',
-        SUPABASE_ANON_KEY: 'YOUR_SUPABASE_ANON_KEY',
-        GOOGLE_CLIENT_ID: '45424427828-jus2sj7li3iabnmff4bu1t81fkf88sbr.apps.googleusercontent.com',
-        GOOGLE_API_KEY: '', // Optional for Drive API
-        
-        // Recording settings
-        DEFAULT_BITRATE: 64000,
-        AUTOSAVE_ENABLED: true,
-        
-        // Sync settings
-        SYNC_INTERVAL_MS: 30000,
-        MAX_RETRY_COUNT: 5
-    };
+    // Use the CONFIG object from config.js
+    // This is now centralized for easier management
     
     // State
     let isReady = false;
@@ -34,6 +20,18 @@ const App = (function() {
     async function init() {
         try {
             console.log('Initialising Voice to Drive...');
+            
+            // Wait for dependencies to be available
+            await waitForDependencies();
+            
+            // Validate configuration
+            try {
+                CONFIG.validate();
+            } catch (error) {
+                console.error('Configuration error:', error);
+                UIService.toast('Configuration error: ' + error.message, 'error');
+                throw error;
+            }
             
             // Initialise UI
             UIService.init();
@@ -175,8 +173,15 @@ const App = (function() {
         UIService.elements.settingsMic?.addEventListener('change', handleSettingsMicChange);
         UIService.elements.settingsQuality?.addEventListener('change', handleSettingsQualityChange);
         UIService.elements.settingsAutosave?.addEventListener('change', handleSettingsAutosaveChange);
+        UIService.elements.settingsDrivePath?.addEventListener('change', handleSettingsDrivePathChange);
+        UIService.elements.settingsTranscription?.addEventListener('change', handleSettingsTranscriptionChange);
         UIService.elements.btnDisconnectDrive?.addEventListener('click', handleDisconnectDrive);
         UIService.elements.btnClearSynced?.addEventListener('click', handleClearSynced);
+        
+        // Transcription modal
+        UIService.elements.transcriptionModal?.querySelector('.modal-backdrop')?.addEventListener('click', () => UIService.showTranscription(false));
+        UIService.elements.btnCloseTranscription?.addEventListener('click', () => UIService.showTranscription(false));
+        UIService.elements.recordingsList?.addEventListener('click', handleTranscriptionLinkClick);
         
         // Keyboard shortcuts
         document.addEventListener('keydown', handleKeydown);
@@ -284,11 +289,28 @@ const App = (function() {
             const recording = await RecorderService.stop();
             
             if (recording) {
+                const drivePath = await StorageService.getSetting('drivePath') || 'recordings';
+                const transcriptionEnabled = await StorageService.getSetting('transcriptionEnabled') || false;
+                
+                // Add metadata to recording object
+                recording.drivePath = drivePath;
+                recording.transcriptionEnabled = transcriptionEnabled;
+                
                 // Save to IndexedDB
                 await StorageService.saveRecording(recording);
                 
                 // Save to Supabase
-                await Supabase.uploadAndInsertMetadata(recording.blob, recording.id, recording.duration);
+                await Supabase.uploadAndInsertMetadata(
+                    recording.blob, 
+                    recording.id, 
+                    recording.duration,
+                    transcriptionEnabled
+                );
+                
+                // 4. Start Transcription Pipeline if enabled
+                if (transcriptionEnabled) {
+                    TranscribeService.startTranscriptionPipeline(recording.id);
+                }
                 
                 UIService.toast('Recording saved locally and backed up to Supabase!', 'success');
                 await updateRecordingsList();
@@ -353,6 +375,35 @@ const App = (function() {
         UIService.toast(`Autosave ${autosaveEnabled ? 'enabled' : 'disabled'}`, 'info');
     }
     
+    async function handleSettingsDrivePathChange(e) {
+        const drivePath = e.target.value;
+        await StorageService.setSetting('drivePath', drivePath);
+        UIService.toast('Drive folder path updated', 'success');
+    }
+    
+    async function handleSettingsTranscriptionChange(e) {
+        const transcriptionEnabled = e.target.checked;
+        await StorageService.setSetting('transcriptionEnabled', transcriptionEnabled);
+        UIService.toast(`Transcription ${transcriptionEnabled ? 'enabled' : 'disabled'}`, 'info');
+    }
+    
+    async function showSettings(show) {
+        if (show) {
+            const settings = {
+                devices: await RecorderService.getAudioDevices(),
+                selectedMic: selectedMicId,
+                quality: CONFIG.DEFAULT_BITRATE,
+                autosave: CONFIG.AUTOSAVE_ENABLED,
+                drivePath: await StorageService.getSetting('drivePath') || 'recordings',
+                transcription: await StorageService.getSetting('transcriptionEnabled') || false,
+                driveUser: DriveService.getCurrentUser(),
+                storage: await DriveService.getStorageQuota()
+            };
+            UIService.updateSettings(settings);
+        }
+        UIService.showSettings(show);
+    }
+    
     async function handleDisconnectDrive() {
         try {
             await DriveService.signOut();
@@ -371,6 +422,33 @@ const App = (function() {
                 UIService.toast('Cleared synced recordings from local storage', 'success');
             } catch (error) {
                 UIService.toast('Failed to clear recordings', 'error');
+            }
+        }
+    }
+    
+    async function handleTranscriptionLinkClick(e) {
+        if (e.target.classList.contains('transcription-link')) {
+            e.preventDefault();
+            const recordId = e.target.dataset.id;
+            
+            try {
+                // Fetch the full record from Supabase to get the transcription text
+                const { data, error } = await Supabase.supabase
+                    .from('recordings')
+                    .select('transcription_text')
+                    .eq('id', recordId)
+                    .single();
+                
+                if (error) throw error;
+                
+                if (data && data.transcription_text) {
+                    UIService.showTranscription(data.transcription_text);
+                } else {
+                    UIService.toast('Transcription not available yet', 'info');
+                }
+            } catch (error) {
+                console.error('Failed to fetch transcription:', error);
+                UIService.toast('Failed to load transcription', 'error');
             }
         }
     }
@@ -435,13 +513,28 @@ const App = (function() {
             
             for (const recording of unsynced) {
                 // 1. Upload to Drive
-                const driveFile = await DriveService.uploadRecording(recording);
+                // Ensure we have the blob. If it's from Supabase, we might need to fetch it, 
+                // but if it's from local storage, it's already there.
+                const localRecording = await StorageService.getRecording(recording.id);
+                if (!localRecording || !localRecording.blob) {
+                    console.error('Recording blob not found for sync:', recording.id);
+                    continue;
+                }
+
+                const drivePath = localRecording.drivePath || 'recordings';
+                console.log(`Syncing recording ${recording.id} to Drive path: ${drivePath}`);
+                
+                const driveFile = await DriveService.uploadRecording(
+                    localRecording.blob, 
+                    localRecording.fileName || `recording_${recording.id}.webm`,
+                    drivePath
+                );
                 
                 // 2. Update local storage with Drive ID and synced status
-                await StorageService.markRecordingAsSynced(recording.id, driveFile.id);
+                await StorageService.markRecordingAsSynced(recording.id, driveFile.fileId);
                 
                 // 3. Update Supabase with Drive ID
-                await Supabase.markSyncedToDrive(recording.id, driveFile.id);
+                await Supabase.markSyncedToDrive(recording.id, driveFile.fileId);
                 
                 UIService.toast(`Synced: ${recording.title}`, 'info');
             }
@@ -515,13 +608,48 @@ const App = (function() {
         }
     }
     
+    /**
+     * Helper to wait for global dependencies to be defined
+     */
+    function waitForDependencies() {
+        return new Promise((resolve, reject) => {
+            const maxAttempts = 50;
+            let attempts = 0;
+            
+            const check = () => {
+                attempts++;
+                const deps = {
+                    'SupabaseService': typeof SupabaseService !== 'undefined',
+                    'StorageService': typeof StorageService !== 'undefined',
+                    'DriveService': typeof DriveService !== 'undefined',
+                    'UIService': typeof UIService !== 'undefined',
+                    'RecorderService': typeof RecorderService !== 'undefined'
+                };
+                
+                const missing = Object.keys(deps).filter(k => !deps[k]);
+                
+                if (missing.length === 0) {
+                    console.log('All dependencies loaded.');
+                    resolve();
+                } else if (attempts >= maxAttempts) {
+                    console.error('Missing dependencies after 5s:', missing);
+                    reject(new Error('Missing dependencies: ' + missing.join(', ')));
+                } else {
+                    setTimeout(check, 100);
+                }
+            };
+            
+            check();
+        });
+    }
+
     // Public API
     return {
         init: init,
         handleRecordToggle: handleRecordToggle,
         handleStop: handleStop,
         handleCancel: handleCancel,
-        showSettings: UIService.showSettings,
+        showSettings: showSettings,
         handleConnectDrive: handleConnectDrive,
         handleDisconnectDrive: handleDisconnectDrive,
         handleClearSynced: handleClearSynced,

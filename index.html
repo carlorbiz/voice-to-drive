@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#0a0a0f">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="description" content="Hands-free voice recording with automatic Google Drive sync">
@@ -241,11 +242,14 @@
     </div>
     
     <!-- Scripts -->
+    <script src="js/config.js"></script>
     <script src="js/storage.js"></script>
     <script src="js/recorder.js"></script>
     <script src="js/drive.js"></script>
+    <script src="js/supabase.js"></script>
+    <script src="js/transcribe.js"></script>
     <script src="js/ui.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/app.js" defer></script>
     
     <!-- Service Worker Registration -->
     <script>
