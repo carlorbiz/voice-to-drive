@@ -185,14 +185,30 @@ const StorageService = (function() {
      */
     async function getUnsyncedRecordings() {
         return new Promise((resolve, reject) => {
+            if (!db) {
+                reject(new Error('Database not initialised'));
+                return;
+            }
             const transaction = db.transaction([STORES.RECORDINGS], 'readonly');
             const store = transaction.objectStore(STORES.RECORDINGS);
             const index = store.index('synced');
-            const request = index.getAll(0); // 0 = not synced
             
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
+            // Use IDBKeyRange to ensure a valid key is used
+            const request = index.getAll(IDBKeyRange.only(0)); // 0 = not synced
+            
+            request.onsuccess = () => resolve(request.result || []);
+            request.onerror = () => {
+                console.error('Failed to get unsynced recordings:', request.error);
+                reject(request.error);
+            };
         });
+    }
+
+    /**
+     * Mark a recording as synced
+     */
+    async function markRecordingAsSynced(id, driveId) {
+        return updateRecordingStatus(id, 'synced', { driveId });
     }
     
     /**
@@ -409,6 +425,7 @@ const StorageService = (function() {
         clearSessionChunks,
         recoverFromChunks,
         getUnsyncedRecordings,
+        markRecordingAsSynced,
         getAllRecordings,
         getRecording,
         updateRecordingStatus,
