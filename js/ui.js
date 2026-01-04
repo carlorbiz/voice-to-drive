@@ -52,6 +52,8 @@ const UIService = (function() {
         elements.settingsMic = document.getElementById('settings-mic');
         elements.settingsQuality = document.getElementById('settings-quality');
         elements.settingsAutosave = document.getElementById('settings-autosave');
+        elements.settingsDrivePath = document.getElementById('settings-drive-path');
+        elements.settingsTranscription = document.getElementById('settings-transcription');
         elements.settingsDriveInfo = document.getElementById('settings-drive-info');
         elements.btnDisconnectDrive = document.getElementById('btn-disconnect-drive');
         elements.storageInfo = document.getElementById('storage-info');
@@ -59,6 +61,11 @@ const UIService = (function() {
         
         // Toast container
         elements.toastContainer = document.getElementById('toast-container');
+        
+        // Transcription Modal
+        elements.transcriptionModal = document.getElementById('transcription-modal');
+        elements.transcriptionText = document.getElementById('transcription-text');
+        elements.btnCloseTranscription = document.getElementById('btn-close-transcription');
         
         // Get visualiser bars
         elements.visualiserBars = elements.visualiser.querySelectorAll('.bar');
@@ -302,30 +309,49 @@ const UIService = (function() {
             const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const duration = formatDuration(recording.duration);
             
-            let statusClass, statusText;
-            switch (recording.status) {
-                case 'synced':
-                    statusClass = 'synced';
-                    statusText = '✓ Synced';
-                    break;
-                case 'uploading':
-                    statusClass = 'uploading';
-                    statusText = '↻ Uploading';
-                    break;
-                case 'failed':
-                    statusClass = 'pending';
-                    statusText = '! Failed';
-                    break;
-                default:
-                    statusClass = 'pending';
-                    statusText = '○ Pending';
-            }
-            
-            item.innerHTML = `
-                <span class="time">${time}</span>
-                <span class="duration">${duration}</span>
-                <span class="status ${statusClass}">${statusText}</span>
-            `;
+	            let statusClass, statusText, transcriptionStatusText = '';
+	            
+	            // Determine main sync status
+	            switch (recording.status) {
+	                case 'synced':
+	                    statusClass = 'synced';
+	                    statusText = '✓ Synced';
+	                    break;
+	                case 'uploading':
+	                    statusClass = 'uploading';
+	                    statusText = '↻ Uploading';
+	                    break;
+	                case 'failed':
+	                    statusClass = 'pending';
+	                    statusText = '! Failed';
+	                    break;
+	                default:
+	                    statusClass = 'pending';
+	                    statusText = '○ Pending';
+	            }
+	            
+	            // Determine transcription status
+	            if (recording.transcription_status) {
+	                switch (recording.transcription_status) {
+	                    case 'COMPLETED':
+	                        transcriptionStatusText = `<a href="#" class="transcription-link" data-id="${recording.id}">[View Transcript]</a>`;
+	                        break;
+	                    case 'IN_PROGRESS':
+	                    case 'PENDING':
+	                        transcriptionStatusText = '...Transcribing';
+	                        break;
+	                    case 'FAILED':
+	                        transcriptionStatusText = '! Transcribe Failed';
+	                        break;
+	                }
+	            }
+	            
+	            item.innerHTML = `
+	                <span class="time">${time}</span>
+	                <span class="duration">${duration}</span>
+	                <span class="status ${statusClass}">${statusText}</span>
+	                <span class="transcription-status">${transcriptionStatusText}</span>
+	            `;
             
             list.appendChild(item);
         });
@@ -358,6 +384,18 @@ const UIService = (function() {
     }
     
     /**
+     * Show/hide transcription modal
+     */
+    function showTranscription(text) {
+        if (text) {
+            elements.transcriptionText.textContent = text;
+            elements.transcriptionModal.classList.remove('hidden');
+        } else {
+            elements.transcriptionModal.classList.add('hidden');
+        }
+    }
+    
+    /**
      * Update settings modal with current values
      */
     function updateSettings(settings) {
@@ -371,6 +409,14 @@ const UIService = (function() {
         
         if (settings.autosave !== undefined) {
             elements.settingsAutosave.checked = settings.autosave;
+        }
+        
+        if (settings.drivePath !== undefined) {
+            elements.settingsDrivePath.value = settings.drivePath;
+        }
+        
+        if (settings.transcription !== undefined) {
+            elements.settingsTranscription.checked = settings.transcription;
         }
         
         if (settings.driveUser) {

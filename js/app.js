@@ -4,9 +4,12 @@
  */
 
 const App = (function() {
+    const Supabase = SupabaseService;
     // Configuration
     const CONFIG = {
         // Replace with your Google Cloud credentials
+        SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL,
+        SUPABASE_ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY,
         GOOGLE_CLIENT_ID: '45424427828-jus2sj7li3iabnmff4bu1t81fkf88sbr.apps.googleusercontent.com',
         GOOGLE_API_KEY: '', // Optional for Drive API
         
@@ -34,6 +37,7 @@ const App = (function() {
             
             // Initialise UI
             UIService.init();
+            Supabase.init(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
             
             // Initialise storage
             await StorageService.init();
@@ -160,7 +164,6 @@ const App = (function() {
         
         // Main screen
         UIService.elements.btnRecord?.addEventListener('click', handleRecordToggle);
-        UIService.elements.btnPause?.addEventListener('click', handlePause);
         UIService.elements.btnStop?.addEventListener('click', handleStop);
         UIService.elements.btnCancel?.addEventListener('click', handleCancel);
         UIService.elements.btnSettings?.addEventListener('click', () => showSettings(true));
@@ -260,291 +263,273 @@ const App = (function() {
             } catch (error) {
                 UIService.toast('Failed to start recording: ' + error.message, 'error');
             }
-        } else if (state === 'recording' || state === 'paused') {
-            // Stop recording
-            await handleStop();
-        }
-    }
-    
-    function handlePause() {
-        const state = RecorderService.getState();
-        
-        if (state === 'recording') {
+        } else if (state === 'recording') {
+            // Pause recording
             RecorderService.pause();
             UIService.setRecordingState('paused');
+            UIService.toast('Recording paused', 'info');
         } else if (state === 'paused') {
+            // Resume recording
             RecorderService.resume();
             UIService.setRecordingState('recording');
+            UIService.toast('Recording resumed', 'success');
         }
     }
     
     async function handleStop() {
         try {
             UIService.updateStatusMessage('Saving...');
+            UIService.setRecordingState('saving');
             
-            const result = await RecorderService.stop();
+            const recording = await RecorderService.stop();
             
-            if (result && result.blob.size > 0) {
-                // Save to local storage
-                const recordingId = await StorageService.saveRecording(result.blob, {
-                    duration: result.duration,
-                    mimeType: result.mimeType
-                });
+            if (recording) {
+                // Save to IndexedDB
+                await StorageService.saveRecording(recording);
                 
-                UIService.toast('Recording saved', 'success');
+                // Save to Supabase
+                await Supabase.uploadAndInsertMetadata(recording.blob, recording.id, recording.duration);
                 
-                // Update list
+                UIService.toast('Recording saved locally and backed up to Supabase!', 'success');
                 await updateRecordingsList();
+                await updateSyncStatus();
                 
-                // Trigger sync
-                syncRecordings();
+                // Attempt immediate Drive sync
+                await syncRecordings();
             }
             
-            UIService.setRecordingState('idle');
+            UIService.setRecordingState('inactive');
+            UIService.stopTimer();
             
         } catch (error) {
-            console.error('Stop recording error:', error);
-            UIService.toast('Error saving recording: ' + error.message, 'error');
-            UIService.setRecordingState('idle');
+            console.error('Failed to stop recording:', error);
+            UIService.toast('Failed to stop recording: ' + error.message, 'error');
+            UIService.setRecordingState('inactive');
+            UIService.stopTimer();
         }
     }
     
     async function handleCancel() {
-        if (!UIService.confirm('Cancel recording and discard?')) {
-            return;
+        if (RecorderService.getState() !== 'inactive') {
+            RecorderService.cancel();
+            UIService.setRecordingState('inactive');
+            UIService.stopTimer();
+            UIService.toast('Recording cancelled', 'info');
         }
+    }
+    
+    async function handleSettingsMicChange(e) {
+        const newMicId = e.target.value;
+        await StorageService.setSetting('selectedMic', newMicId);
+        selectedMicId = newMicId;
         
-        await RecorderService.cancel();
-        UIService.setRecordingState('idle');
-        UIService.toast('Recording cancelled', 'warning');
+        // Re-initialise recorder with new mic
+        try {
+            await RecorderService.init(selectedMicId, CONFIG.DEFAULT_BITRATE);
+            UIService.toast('Microphone updated', 'success');
+        } catch (error) {
+            UIService.toast('Failed to switch microphone', 'error');
+        }
+    }
+    
+    async function handleSettingsQualityChange(e) {
+        const newBitrate = parseInt(e.target.value);
+        await StorageService.setSetting('defaultBitrate', newBitrate);
+        CONFIG.DEFAULT_BITRATE = newBitrate;
+        
+        // Re-initialise recorder with new bitrate
+        try {
+            await RecorderService.init(selectedMicId, CONFIG.DEFAULT_BITRATE);
+            UIService.toast('Recording quality updated', 'success');
+        } catch (error) {
+            UIService.toast('Failed to update quality', 'error');
+        }
+    }
+    
+    async function handleSettingsAutosaveChange(e) {
+        const autosaveEnabled = e.target.checked;
+        await StorageService.setSetting('autosaveEnabled', autosaveEnabled);
+        CONFIG.AUTOSAVE_ENABLED = autosaveEnabled;
+        UIService.toast(`Autosave ${autosaveEnabled ? 'enabled' : 'disabled'}`, 'info');
+    }
+    
+    async function handleDisconnectDrive() {
+        try {
+            await DriveService.signOut();
+            UIService.toast('Disconnected from Google Drive', 'info');
+            await updateSyncStatus();
+        } catch (error) {
+            UIService.toast('Failed to disconnect Drive', 'error');
+        }
+    }
+    
+    async function handleClearSynced() {
+        if (confirm('Are you sure you want to clear all synced recordings from local storage? This will not delete files from Google Drive.')) {
+            try {
+                await StorageService.clearSyncedRecordings();
+                await updateRecordingsList();
+                UIService.toast('Cleared synced recordings from local storage', 'success');
+            } catch (error) {
+                UIService.toast('Failed to clear recordings', 'error');
+            }
+        }
     }
     
     function handleKeydown(e) {
-        // Space bar to toggle recording (when not in input)
-        if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT') {
+        if (e.key === ' ' && isReady) { // Spacebar to toggle record
             e.preventDefault();
             handleRecordToggle();
-        }
-        
-        // Escape to close modal
-        if (e.code === 'Escape') {
-            showSettings(false);
+        } else if (e.key === 'Escape' && RecorderService.getState() !== 'inactive') { // Escape to cancel
+            e.preventDefault();
+            handleCancel();
         }
     }
     
     function handleVisibilityChange() {
-        // Auto-save chunk when app goes to background
-        if (document.hidden && RecorderService.getState() === 'recording') {
-            // The recorder service handles chunked saves internally
-            console.log('App backgrounded during recording');
+        if (document.visibilityState === 'hidden' && RecorderService.getState() === 'recording' && CONFIG.AUTOSAVE_ENABLED) {
+            // Auto-save on tab switch if autosave is enabled
+            handleStop();
         }
     }
     
-    function handleBeforeUnload(e) {
-        if (RecorderService.getState() === 'recording') {
+    async function handleBeforeUnload(e) {
+        if (RecorderService.getState() !== 'inactive') {
             e.preventDefault();
-            e.returnValue = 'Recording in progress. Are you sure you want to leave?';
-        }
-    }
-    
-    async function showSettings(show) {
-        if (show) {
-            // Update settings with current values
-            const devices = await RecorderService.getAudioDevices();
-            const storage = await StorageService.getStorageEstimate();
+            e.returnValue = 'You have an active recording. Are you sure you want to leave?';
             
-            UIService.updateSettings({
-                devices,
-                selectedMic: selectedMicId,
-                quality: CONFIG.DEFAULT_BITRATE,
-                autosave: CONFIG.AUTOSAVE_ENABLED,
-                driveUser: DriveService.getCurrentUser(),
-                storage
-            });
+            // Attempt to auto-save before closing
+            if (CONFIG.AUTOSAVE_ENABLED) {
+                await handleStop();
+            }
         }
-        
-        UIService.showSettings(show);
     }
     
-    async function handleSettingsMicChange(e) {
-        selectedMicId = e.target.value;
-        await StorageService.setSetting('selectedMic', selectedMicId);
-        
-        // Reinitialise recorder if not recording
-        if (RecorderService.getState() === 'inactive') {
-            RecorderService.cleanup();
-            await RecorderService.init(selectedMicId, CONFIG.DEFAULT_BITRATE);
-        }
-        
-        UIService.toast('Microphone updated', 'success');
-    }
-    
-    async function handleSettingsQualityChange(e) {
-        CONFIG.DEFAULT_BITRATE = parseInt(e.target.value);
-        await StorageService.setSetting('audioBitrate', CONFIG.DEFAULT_BITRATE);
-        UIService.toast('Audio quality updated', 'success');
-    }
-    
-    async function handleSettingsAutosaveChange(e) {
-        CONFIG.AUTOSAVE_ENABLED = e.target.checked;
-        await StorageService.setSetting('autosave', CONFIG.AUTOSAVE_ENABLED);
-    }
-    
-    async function handleDisconnectDrive() {
-        if (!UIService.confirm('Disconnect from Google Drive? Pending recordings will remain queued.')) {
-            return;
-        }
-        
-        await DriveService.signOut();
-        UIService.updateSettings({ driveUser: null });
-        UIService.toast('Disconnected from Google Drive', 'warning');
-    }
-    
-    async function handleClearSynced() {
-        const count = await StorageService.clearSyncedRecordings();
-        await updateRecordingsList();
-        UIService.toast(`Cleared ${count} synced recordings`, 'success');
-        
-        // Update storage display
-        const storage = await StorageService.getStorageEstimate();
-        UIService.updateSettings({ storage });
-    }
-    
-    // Sync Functions
+    // Sync Logic
     
     function startSyncInterval() {
-        stopSyncInterval();
-        
-        syncInterval = setInterval(() => {
-            if (navigator.onLine && !isSyncing) {
-                syncRecordings();
-            }
-        }, CONFIG.SYNC_INTERVAL_MS);
-        
-        // Initial sync
-        syncRecordings();
-    }
-    
-    function stopSyncInterval() {
         if (syncInterval) {
             clearInterval(syncInterval);
-            syncInterval = null;
         }
+        syncInterval = setInterval(syncRecordings, CONFIG.SYNC_INTERVAL_MS);
     }
     
     async function syncRecordings() {
-        if (isSyncing || !navigator.onLine || !DriveService.isAuthenticated()) {
+        if (isSyncing || !DriveService.isAuthenticated()) {
             return;
         }
         
         isSyncing = true;
+        UIService.setSyncStatus('syncing');
         
         try {
-            const recordings = await StorageService.getUnsyncedRecordings();
+            // Use Supabase as the source of truth for unsynced recordings
+            const unsynced = await Supabase.getUnsyncedToDriveRecords();
             
-            if (recordings.length === 0) {
-                updateSyncStatus();
+            if (unsynced.length === 0) {
+                UIService.setSyncStatus('synced');
+                isSyncing = false;
                 return;
             }
             
-            UIService.updateSyncStatus(recordings.length, true);
+            console.log(`Starting sync for ${unsynced.length} recordings...`);
             
-            for (const recording of recordings) {
-                // Skip if too many retries
-                if (recording.retryCount >= CONFIG.MAX_RETRY_COUNT) {
-                    continue;
-                }
+            for (const recording of unsynced) {
+                // 1. Upload to Drive
+                const driveFile = await DriveService.uploadRecording(recording);
                 
-                try {
-                    // Update status to uploading
-                    await StorageService.updateRecordingStatus(recording.id, 'uploading');
-                    await updateRecordingsList();
-                    
-                    // Upload to Drive
-                    const result = await DriveService.uploadRecording(
-                        recording.blob,
-                        recording.fileName,
-                        recording.drivePath
-                    );
-                    
-                    // Mark as synced
-                    await StorageService.updateRecordingStatus(recording.id, 'synced', {
-                        driveFileId: result.fileId
-                    });
-                    
-                    console.log('Synced recording:', recording.id);
-                    
-                } catch (error) {
-                    console.error('Failed to sync recording:', recording.id, error);
-                    await StorageService.updateRecordingStatus(recording.id, 'failed');
-                    await StorageService.incrementRetryCount(recording.id);
-                }
+                // 2. Update local storage with Drive ID and synced status
+                await StorageService.markRecordingAsSynced(recording.id, driveFile.id);
+                
+                // 3. Update Supabase with Drive ID
+                await Supabase.markSyncedToDrive(recording.id, driveFile.id);
+                
+                UIService.toast(`Synced: ${recording.title}`, 'info');
             }
             
             await updateRecordingsList();
+            UIService.setSyncStatus('synced');
             
+        } catch (error) {
+            console.error('Sync failed:', error);
+            UIService.setSyncStatus('error');
+            UIService.toast('Sync failed: ' + error.message, 'error');
         } finally {
             isSyncing = false;
-            updateSyncStatus();
         }
     }
     
-    async function updateSyncStatus() {
-        const recordings = await StorageService.getUnsyncedRecordings();
-        UIService.updateSyncStatus(recordings.length, isSyncing);
-    }
+    // UI Updates
     
     async function updateRecordingsList() {
         const recordings = await StorageService.getAllRecordings();
         UIService.updateRecordingsList(recordings);
     }
     
-    function updateNetworkStatus() {
-        UIService.updateConnectionStatus(navigator.onLine);
+    async function updateSyncStatus() {
+        const isAuthenticated = DriveService.isAuthenticated();
+        let unsyncedCount = 0;
+        try {
+            unsyncedCount = (await StorageService.getUnsyncedRecordings()).length;
+        } catch (e) {
+            console.error('Failed to get unsynced count:', e);
+        }
         
-        if (navigator.onLine) {
-            syncRecordings();
+        if (!isAuthenticated) {
+            UIService.setSyncStatus('disconnected');
+        } else if (unsyncedCount > 0) {
+            UIService.setSyncStatus('pending', unsyncedCount);
+        } else {
+            UIService.setSyncStatus('synced');
         }
     }
     
-    // Recovery Functions
+    function updateNetworkStatus() {
+        if (navigator.onLine) {
+            UIService.setNetworkStatus('online');
+        } else {
+            UIService.setNetworkStatus('offline');
+        }
+    }
+    
+    // Recovery
     
     async function checkForRecovery() {
-        const orphanedSessions = await StorageService.getOrphanedSessions();
-        
-        if (orphanedSessions.length > 0) {
-            console.log('Found orphaned sessions:', orphanedSessions);
-            
-            for (const sessionId of orphanedSessions) {
+        const recoveryData = await StorageService.getRecoveryData();
+        if (recoveryData) {
+            UIService.showRecoveryPrompt(recoveryData.title, async () => {
+                // Resume recording from recovery data
                 try {
-                    const blob = await StorageService.recoverFromChunks(sessionId);
-                    
-                    if (blob && blob.size > 0) {
-                        // Save recovered recording
-                        await StorageService.saveRecording(blob, {
-                            recovered: true,
-                            originalSessionId: sessionId
-                        });
-                        
-                        UIService.toast('Recovered recording from previous session', 'success');
-                    }
-                    
-                    // Clear the chunks
-                    await StorageService.clearSessionChunks(sessionId);
-                    
+                    await RecorderService.resumeFromRecovery(recoveryData);
+                    UIService.setRecordingState('recording');
+                    UIService.startTimer(() => RecorderService.getElapsedTime());
+                    UIService.toast('Recording resumed from crash recovery', 'warning');
                 } catch (error) {
-                    console.error('Failed to recover session:', sessionId, error);
+                    UIService.toast('Failed to resume recording', 'error');
+                    await StorageService.clearRecoveryData();
                 }
-            }
+            }, async () => {
+                // Discard recording
+                await StorageService.clearRecoveryData();
+                UIService.toast('Discarded recovered recording', 'info');
+            });
         }
     }
     
     // Public API
     return {
-        init,
-        syncRecordings
+        init: init,
+        handleRecordToggle: handleRecordToggle,
+        handleStop: handleStop,
+        handleCancel: handleCancel,
+        showSettings: UIService.showSettings,
+        handleConnectDrive: handleConnectDrive,
+        handleDisconnectDrive: handleDisconnectDrive,
+        handleClearSynced: handleClearSynced,
+        handleStartApp: handleStartApp,
+        checkSetupComplete: checkSetupComplete,
+        updateRecordingsList: updateRecordingsList,
+        updateSyncStatus: updateSyncStatus
     };
 })();
 
-// Start the app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => App.init());
+window.addEventListener('load', App.init);

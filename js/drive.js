@@ -194,8 +194,14 @@ const DriveService = (function() {
         }
         
         try {
+            // Use the user-defined folder path directly
+            // If folderPath is empty, use the default root folder
+            const fullPath = folderPath || CONFIG.ROOT_FOLDER;
+            console.log('Ensuring folder path:', fullPath);
+            
             // Ensure folder structure exists
-            const folderId = await ensureFolderPath(folderPath);
+            const folderId = await ensureFolderPath(fullPath);
+            console.log('Target folder ID:', folderId);
             
             // Upload file
             const fileId = await uploadFile(blob, fileName, folderId);
@@ -231,12 +237,12 @@ const DriveService = (function() {
             return folderCache.get(path);
         }
         
-        const parts = path.split('/').filter(p => p);
+        const parts = path.split('/').filter(p => p && p.trim() !== '');
         let parentId = 'root';
         let currentPath = '';
         
         for (const folderName of parts) {
-            currentPath += '/' + folderName;
+            currentPath += (currentPath ? '/' : '') + folderName;
             
             if (folderCache.has(currentPath)) {
                 parentId = folderCache.get(currentPath);
