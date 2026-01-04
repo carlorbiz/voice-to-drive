@@ -4,6 +4,7 @@
  * - Device selection (supports headphones)
  * - Chunked saves for crash protection
  * - Audio level monitoring for visualisation
+ * - Letterly-style manual pause/resume
  */
 
 const RecorderService = (function() {
@@ -252,7 +253,6 @@ const RecorderService = (function() {
             stopChunkInterval();
             
             // Store completion handler
-            const originalOnStop = mediaRecorder.onstop;
             mediaRecorder.onstop = async (event) => {
                 try {
                     // Create final blob from all chunks
@@ -303,111 +303,106 @@ const RecorderService = (function() {
             await StorageService.clearSessionChunks(sessionId);
         }
         
+        // Reset state
         chunks = [];
         sessionId = null;
-        
-        console.log('Recording cancelled');
     }
     
     /**
-     * Get current state
+     * Resume recording from crash recovery data
+     */
+    async function resumeFromRecovery(recoveryData) {
+        // 1. Restore state
+        sessionId = recoveryData.sessionId;
+        startTime = recoveryData.startTime;
+        pausedDuration = recoveryData.pausedDuration;
+        chunkSequence = recoveryData.chunkSequence;
+        
+        // 2. Load chunks from storage
+        const loadedChunks = await StorageService.loadSessionChunks(sessionId);
+        chunks = loadedChunks.map(c => c.blob);
+        
+        // 3. Re-initialise MediaRecorder
+        const mimeType = MediaRecorder.isTypeSupported(config.mimeType) 
+            ? config.mimeType 
+            : 'audio/webm';
+            
+        mediaRecorder = new MediaRecorder(mediaStream, {
+            mimeType,
+            audioBitsPerSecond: config.audioBitsPerSecond
+        });
+        
+        mediaRecorder.ondataavailable = handleDataAvailable;
+        mediaRecorder.onerror = handleError;
+        mediaRecorder.onstop = handleStop;
+        
+        // 4. Resume recording
+        mediaRecorder.start(config.timeslice);
+        
+        // 5. Restart interval and monitoring
+        startChunkInterval();
+        monitorAudioLevel();
+        
+        console.log('Resumed from recovery, session:', sessionId);
+    }
+    
+    /**
+     * Get current state of the recorder
      */
     function getState() {
-        if (!mediaRecorder) return 'inactive';
-        return mediaRecorder.state; // 'inactive', 'recording', 'paused'
+        if (!mediaRecorder) {
+            return 'inactive';
+        }
+        return mediaRecorder.state;
     }
     
     /**
-     * Get elapsed recording time in seconds
+     * Get elapsed time in seconds
      */
     function getElapsedTime() {
         if (!startTime) return 0;
         
-        let elapsed = Date.now() - startTime - pausedDuration;
-        if (pauseStartTime) {
-            elapsed -= (Date.now() - pauseStartTime);
+        let elapsed = Date.now() - startTime;
+        
+        // Subtract time spent paused
+        elapsed -= pausedDuration;
+        
+        // If currently paused, subtract time since pause started
+        if (mediaRecorder && mediaRecorder.state === 'paused' && pauseStartTime) {
+            elapsed -= Date.now() - pauseStartTime;
         }
         
         return Math.floor(elapsed / 1000);
     }
     
     /**
-     * Get current audio level (0-1)
-     */
-    function getAudioLevel() {
-        if (!analyser) return 0;
-        
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        analyser.getByteFrequencyData(dataArray);
-        
-        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-        return average / 255;
-    }
-    
-    /**
-     * Get session ID
-     */
-    function getSessionId() {
-        return sessionId;
-    }
-    
-    /**
      * Set callbacks
      */
     function setCallbacks(callbacks) {
-        onAudioLevel = callbacks.onAudioLevel || null;
-        onChunkSaved = callbacks.onChunkSaved || null;
-        onError = callbacks.onError || null;
+        onAudioLevel = callbacks.onAudioLevel;
+        onChunkSaved = callbacks.onChunkSaved;
+        onError = callbacks.onError;
     }
     
-    /**
-     * Clean up resources
-     */
-    function cleanup() {
-        stopChunkInterval();
-        
-        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-            mediaRecorder.stop();
-        }
-        
-        if (mediaStream) {
-            mediaStream.getTracks().forEach(track => track.stop());
-            mediaStream = null;
-        }
-        
-        if (audioContext) {
-            audioContext.close();
-            audioContext = null;
-        }
-        
-        analyser = null;
-        mediaRecorder = null;
-        chunks = [];
-        sessionId = null;
-    }
-    
-    // Private methods
+    // Internal Handlers
     
     function handleDataAvailable(event) {
-        if (event.data && event.data.size > 0) {
+        if (event.data.size > 0) {
             chunks.push(event.data);
         }
     }
     
     function handleError(event) {
-        console.error('MediaRecorder error:', event.error);
+        console.error('MediaRecorder Error:', event.error);
         if (onError) onError(event.error);
-    }
-    
-    function handleStop() {
-        console.log('MediaRecorder stopped');
+        stopChunkInterval();
     }
     
     function startChunkInterval() {
-        // Save chunks periodically for crash protection
-        chunkInterval = setInterval(async () => {
-            await saveCurrentChunk();
-        }, config.chunkIntervalMs);
+        if (chunkInterval) {
+            clearInterval(chunkInterval);
+        }
+        chunkInterval = setInterval(saveCurrentChunk, config.chunkIntervalMs);
     }
     
     function stopChunkInterval() {
@@ -417,57 +412,69 @@ const RecorderService = (function() {
         }
     }
     
+    /**
+     * Saves the current recording state and accumulated chunks to IndexedDB for crash recovery.
+     */
     async function saveCurrentChunk() {
-        if (chunks.length === 0 || !sessionId) return;
+        if (chunks.length === 0) return;
         
-        try {
-            // Create blob from current chunks
-            const blob = new Blob(chunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
-            
-            // Save to IndexedDB
-            await StorageService.saveChunk(sessionId, chunkSequence, blob);
-            chunkSequence++;
-            
-            console.log('Chunk saved, sequence:', chunkSequence - 1, 'size:', blob.size);
-            
-            if (onChunkSaved) {
-                onChunkSaved({ sequence: chunkSequence - 1, size: blob.size });
-            }
-            
-        } catch (error) {
-            console.error('Failed to save chunk:', error);
-        }
+        // 1. Save accumulated chunks
+        const chunkBlob = new Blob(chunks, { type: mediaRecorder.mimeType });
+        const chunkInfo = {
+            sessionId,
+            sequence: chunkSequence++,
+            blob: chunkBlob,
+            timestamp: Date.now()
+        };
+        
+        await StorageService.saveChunk(chunkInfo);
+        if (onChunkSaved) onChunkSaved(chunkInfo);
+        
+        // Clear in-memory chunks after saving
+        chunks = [];
+        
+        // 2. Save recovery data
+        const recoveryData = {
+            sessionId,
+            startTime,
+            pausedDuration,
+            chunkSequence,
+            timestamp: Date.now()
+        };
+        await StorageService.saveRecoveryData(recoveryData);
     }
     
     function monitorAudioLevel() {
         if (!analyser || !onAudioLevel) return;
         
-        const check = () => {
-            if (getState() === 'recording' || getState() === 'paused') {
-                const level = getAudioLevel();
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        
+        const checkLevel = () => {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                const level = average / 255;
                 onAudioLevel(level);
-                requestAnimationFrame(check);
+                requestAnimationFrame(checkLevel);
             }
         };
         
-        requestAnimationFrame(check);
+        requestAnimationFrame(checkLevel);
     }
     
     // Public API
     return {
-        getAudioDevices,
-        testMicrophone,
-        init,
-        start,
-        pause,
-        resume,
-        stop,
-        cancel,
-        getState,
-        getElapsedTime,
-        getAudioLevel,
-        getSessionId,
-        setCallbacks,
-        cleanup
+        init: init,
+        start: start,
+        pause: pause,
+        resume: resume,
+        stop: stop,
+        cancel: cancel,
+        getState: getState,
+        getElapsedTime: getElapsedTime,
+        getAudioDevices: getAudioDevices,
+        testMicrophone: testMicrophone,
+        setCallbacks: setCallbacks,
+        resumeFromRecovery: resumeFromRecovery
     };
 })();
