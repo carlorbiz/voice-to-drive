@@ -8,8 +8,8 @@ const App = (function() {
     // Configuration
     const CONFIG = {
         // Replace with your Google Cloud credentials
-        SUPABASE_URL: import.meta.env.VITE_SUPABASE_URL,
-        SUPABASE_ANON_KEY: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        SUPABASE_URL: 'YOUR_SUPABASE_URL',
+        SUPABASE_ANON_KEY: 'YOUR_SUPABASE_ANON_KEY',
         GOOGLE_CLIENT_ID: '45424427828-jus2sj7li3iabnmff4bu1t81fkf88sbr.apps.googleusercontent.com',
         GOOGLE_API_KEY: '', // Optional for Drive API
         
