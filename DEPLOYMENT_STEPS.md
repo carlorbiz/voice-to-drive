@@ -2,47 +2,36 @@
 
 ## 🎯 Deployment Checklist
 
-- [ ] Step 1: Create GitHub Repository
-- [ ] Step 2: Push Code to GitHub
-- [ ] Step 3: Generate PNG Icons
-- [ ] Step 4: Set Up Google OAuth
-- [ ] Step 5: Deploy to CloudFlare Pages
-- [ ] Step 6: Configure DNS
-- [ ] Step 7: Update OAuth Origins
-- [ ] Step 8: Test & Launch
+- [ ] Step 1: Push Code to GitHub (mem0 repo)
+- [ ] Step 2: Generate PNG Icons
+- [ ] Step 3: Set Up Google OAuth
+- [ ] Step 4: Deploy to CloudFlare Pages
+- [ ] Step 5: Configure DNS
+- [ ] Step 6: Update OAuth Origins
+- [ ] Step 7: Test & Launch
 
 ---
 
-## Step 1: Create GitHub Repository
+## Step 1: Push Code to GitHub
 
-1. Go to https://github.com/carlorbiz
-2. Click "New" (green button)
-3. Repository name: `voice-to-drive`
-4. Description: `Hands-free PWA for recording voice notes with automatic Google Drive sync`
-5. Choose: **Public**
-6. **DO NOT** check "Initialize with README" (we already have files)
-7. Click "Create repository"
-
-**Copy the repository URL** (it will be: `https://github.com/carlorbiz/voice-to-drive.git`)
-
----
-
-## Step 2: Push Code to GitHub
+The voice-to-drive app is now part of the mem0 repository.
 
 Open your terminal and run:
 
 ```bash
-cd "C:\Users\carlo\Development\mem0-sync\mem0\github-projects\voice-to-drive-deploy"
+cd "C:\Users\carlo\Development\mem0-sync\mem0"
 
-# Add the GitHub remote
-git remote add origin https://github.com/carlorbiz/voice-to-drive.git
+# Stage the new voice-to-drive folder
+git add voice-to-drive/
 
-# Push to GitHub
-git branch -M main
-git push -u origin main
+# Commit the new app
+git commit -m "feat: Add Voice-to-Drive PWA for hands-free voice recording"
+
+# Push to GitHub (mem0 repo)
+git push origin main
 ```
 
-✅ Your code is now on GitHub!
+✅ Your code is now on GitHub at: `https://github.com/carlorbiz/mem0/tree/main/voice-to-drive`
 
 ---
 

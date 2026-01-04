@@ -6,7 +6,7 @@
 
 const StorageService = (function() {
     const DB_NAME = 'voice-to-drive';
-    const DB_VERSION = 1;
+    const DB_VERSION = 2; // Incremented to fix boolean->number migration
     const STORES = {
         RECORDINGS: 'recordings',
         CHUNKS: 'chunks',
@@ -78,7 +78,7 @@ const StorageService = (function() {
             fileName: generateFileName(new Date()),
             drivePath: generateDrivePath(new Date()),
             status: 'pending', // pending, uploading, synced, failed
-            synced: false,
+            synced: 0, // 0 = not synced, 1 = synced (IndexedDB requires numeric keys)
             retryCount: 0,
             lastRetry: null,
             fileSize: blob.size,
@@ -188,7 +188,7 @@ const StorageService = (function() {
             const transaction = db.transaction([STORES.RECORDINGS], 'readonly');
             const store = transaction.objectStore(STORES.RECORDINGS);
             const index = store.index('synced');
-            const request = index.getAll(false);
+            const request = index.getAll(0); // 0 = not synced
             
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
@@ -244,9 +244,9 @@ const StorageService = (function() {
                     reject(new Error('Recording not found'));
                     return;
                 }
-                
+
                 recording.status = status;
-                recording.synced = status === 'synced';
+                recording.synced = status === 'synced' ? 1 : 0; // Convert to number
                 
                 if (status === 'synced') {
                     recording.syncedAt = new Date().toISOString();
@@ -298,7 +298,7 @@ const StorageService = (function() {
             const transaction = db.transaction([STORES.RECORDINGS], 'readwrite');
             const store = transaction.objectStore(STORES.RECORDINGS);
             const index = store.index('synced');
-            const request = index.openCursor(IDBKeyRange.only(true));
+            const request = index.openCursor(IDBKeyRange.only(1)); // 1 = synced
             
             let count = 0;
             
